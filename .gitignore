@@ -1,0 +1,30 @@
+cat <<EOT >> .gitignore
+
+# Python Sanal Ortam ve Cache
+__pycache__/
+*.pyc
+borsa_bot_env/
+
+# Veri Setleri ve Büyük Klasörler
+
+v6_dataset/
+/
+
+# Sıkıştırılmış Dosyalar ve Yedekler
+*.zip
+*.tar.gz
+*.rar
+
+# Dinamik Olarak Oluşturulan Grafikler ve Görseller
+*.png
+!vision_module.py # Eğer vision modülü içinde görsel varsa karışmasın diye (opsiyonel)
+
+# Yerel Veritabanı ve JSON Kayıtları (Cüzdan ve İşlem geçmişini paylaşmak istemeyebilirsiniz)
+cuzdan.json
+islem_gecmisi.json
+
+# Geçici Notlar ve Çeşitli Dosyalar
+a.txt
+guru_v5_FINAL_B_PLAN.keras # Tam adı görselde kesilmiş, bunu tam adıyla ekleyebilirsin
+EOT
+.env

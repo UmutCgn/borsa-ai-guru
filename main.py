@@ -5,7 +5,11 @@ import vision_module, sentiment_module, decision_engine, risk_yoneticisi, sayisa
 
 # --- AYARLAR ---
 DONGU_SURESI = 900 # 15 Dakika (Analiz periyodu)
-borsa = ccxt.binance({'timeout': 30000}) # Tek borsa objesi ile hız kazanıyoruz
+borsa = ccxt.binance({
+    'timeout': 30000, 
+    'enableRateLimit': True, 
+    'options': {'defaultType': 'spot'} 
+}) # Tek borsa objesi ile hız kazanıyoruz
 
 def grafik_hazirla(sembol, tf):
     """OHLCV verisini çeker ve analiz için görselleştirir."""

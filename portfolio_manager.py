@@ -9,20 +9,27 @@ DOSYA = "cuzdan.json"
 dosya_kilidi = threading.RLock()
 
 def cuzdan_yukle():
-    """Her zaman taze veriyi diskten güvenle okur."""
+    """Her zaman taze veriyi diskten güvenle okur. Okuyamazsa sistemi korumaya alır."""
     with dosya_kilidi:
         if not os.path.exists(DOSYA):
+            # Dosya gerçekten hiç yoksa (ilk kurulum) varsayılanı döndür
             return {"bakiye": 10000.0, "acik_islem": None, "islem_gecmisi": []}
         
         # Okuma için 5 deneme (Dosya o an meşgulse bekleme yapar)
-        for _ in range(5):
+        for deneme in range(5):
             try:
                 with open(DOSYA, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except:
-                time.sleep(0.1)
-        return {"bakiye": 10000.0, "acik_islem": None, "islem_gecmisi": []}
-
+                    veri = json.load(f)
+                    # Dosya boş kalmışsa (crash anında vs.) exception'a düşmesi için kontrol
+                    if not veri: raise ValueError("JSON dosyası boş!") 
+                    return veri
+            except Exception as e:
+                print(f"⚠️ Cüzdan okuma denemesi {deneme+1}/5 başarısız: {e}")
+                time.sleep(0.5) # Bekleme süresini biraz artırdık
+        
+        # 5 denemede de okuyamazsa ASLA 10000 varsayılanı DÖNME! Sistemi kilitle.
+        print("❌ KRİTİK HATA: Cüzdan dosyası okunamıyor! Veri kaybını önlemek için varsayılan bakiye DÖNDÜRÜLMEYECEK.")
+        raise RuntimeError("Cüzdan dosyası okunamadı veya bozuk. Lütfen cuzdan.json dosyasını kontrol edin.")
 def cuzdan_kaydet(veri):
     """Atomic Write: Önce geçici dosyaya yazar, sonra asıl dosyayı günceller."""
     temp_dosya = DOSYA + ".tmp"

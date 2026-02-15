@@ -19,17 +19,34 @@ def modeli_baslat():
     return True
 
 def yatirim_karari_ver(formasyon_adi):
-    """Formasyon listesine göre ana yönü tayin eder."""
-    ad = formasyon_adi.upper().replace("_", "") 
+    """
+    AI modülünden gelen kesin (exact) formasyon isimlerine göre yön tayin eder.
+    Alt çizgi silme veya kelime içinde kelime arama (substring) hataları giderilmiştir.
+    """
+    # ai_module.py içindeki 55 sınıfın sadece yönü KESİN olanları listeledik.
+    bullish_formasyonlar = {
+        '3WHITESOLDIERS', 'DRAGONFLYDOJI', 'HAMMER', 'INVERTEDHAMMER', 
+        'MORNINGDOJISTAR', 'MORNINGSTAR', 'PIERCING', 'HOMINGPIGEON', 
+        'MATCHINGLOW', 'TAKURI', 'UNIQUE3RIVER'
+    }
     
-    bullish = ['HAMMER', 'INVERTEDHAMMER', 'MORNINGSTAR', 'BULLISHENGULFING', 'PIERCINGLINE', 'THREEWHITESOLDIERS', 'BULLISHHARAMI', 'DRAGONFLYDOJI', 'BULLISHMARUBOZU', 'TWEEZERBOTTOM', 'BULLISHBELTHOLD', 'MORNINGDOJISTAR', 'BULLISHABANDONEDBABY', 'CUPANDHANDLE', 'ASCENDINGTRIANGLE', 'BULLISHFLAG', 'BULLISHPENNANT', 'DOUBLEBOTTOM', 'TRIPLEBOTTOM', 'FALLINGWEDGE', 'INVERSEHEADANDSHOULDERS', 'BULLISHRECTANGLE', 'BULLISHKICKER', 'THREEOUTSIDEUP', 'THREEINSIDEUP']
-    bearish = ['SHOOTINGSTAR', 'HANGINGMAN', 'EVENINGSTAR', 'BEARISHENGULFING', 'DARKCLOUDCOVER', 'THREEBLACKCROWS', 'BEARISHHARAMI', 'GRAVESTONEDOJI', 'BEARISHMARUBOZU', 'TWEEZERTOP', 'BEARISHBELTHOLD', 'EVENINGDOJISTAR', 'BEARISHABANDONEDBABY', 'HEADANDSHOULDERS', 'DESCENDINGTRIANGLE', 'BEARISHFLAG', 'BEARISHPENNANT', 'DOUBLETOP', 'TRIPLETOP', 'RISINGWEDGE', 'BEARISHRECTANGLE', 'BEARISHKICKER', 'THREEOUTSIDEDOWN', 'THREEINSIDEDOWN', 'FALLINGTHREE']
-    neutral = ['DOJI', 'SPINNINGTOP', 'SYMMETRICTRIANGLE', 'HARAMICROSS', 'MATCHINGLOW', 'RICKSHAWMAN', 'HIGHWAVE', 'IDENTICALTHREECROWS', 'UPSIDEGAPTWOCROWS', 'SEPARATINGLINES', 'SIDEBYSIDEWHITE LINES', 'TASUKIGAP', 'THREE LINESTRIKE', 'ABANDONEDBABY', 'CONCEALINGBABYSWALLOW', 'LADDERBOTTOM', 'STALLEDPATTERN']
+    bearish_formasyonlar = {
+        '3BLACKCROWS', 'DARKCLOUDCOVER', 'EVENINGDOJISTAR', 'EVENINGSTAR', 
+        'GRAVESTONEDOJI', 'HANGINGMAN', 'IDENTICAL3CROWS', 'SHOOTINGSTAR', 
+        'ADVANCEBLOCK'
+    }
 
-    if any(p in ad for p in bullish): return "BUY 🟢 (Boğa Baskısı)"
-    elif any(p in ad for p in bearish): return "SELL 🔴 (Ayı Baskısı)"
-    elif any(p in ad for p in neutral): return "HOLD 🟡 (Kararsız Pazar)"
-    return "HOLD 🟡 (Bilinmeyen Formasyon)"
+    # Kümelerde (set) arama yapmak 'any()' döngüsünden çok daha hızlıdır (O(1) hızında).
+    if formasyon_adi in bullish_formasyonlar:
+        return "BUY 🟢 (Boğa Baskısı)"
+    
+    elif formasyon_adi in bearish_formasyonlar:
+        return "SELL 🔴 (Ayı Baskısı)"
+    
+    else:
+        # Geri kalanlar (ENGULFING, HARAMI, DOJI, DOJI_10_0.1 vb.)
+        # Yönü mevcut trende bağlı olanlar veya tamamen nötr olan formasyonlar.
+        return f"HOLD 🟡 (Nötr/Kararsız: {formasyon_adi})"
 
 def sistemi_test_et_donuslu(resim_yolu, sayisal_vektor=None):
     """Hem görseli hem de tahta/hacim verisini GuruBrain'e gönderip nihai kararı verir."""

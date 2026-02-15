@@ -25,19 +25,21 @@ def modeli_baslat():
     return True
 
 def sistemi_test_et_donuslu(resim_yolu, sayisal_vektor):
-    """Hem görseli hem de sayısal veriyi Guru V6'ya gönderir."""
+    """Hem görseli hem de sayısal veriyi Guru V6'ya (Simülasyon formatında) gönderir."""
     if not modeli_baslat(): return "ERROR", 0, "HOLD"
     
     try:
-        # 1. Görüntüyü RGB olarak oku ve yapay zekaya uygun hale getir
+        # 1. Görüntüyü RGB olarak oku
         img_bgr = cv2.imread(resim_yolu)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img_rgb, (224, 224)) / 255.0
         
-        # 2. Sayısal veriyi Tensor formatına al
-        num = np.array([sayisal_vektor], dtype=np.float32)
+        # 🚨 2. LIVE_SIM İLE %100 UYUMLU KÖR FORMAT 🚨
+        rsi_raw = sayisal_vektor[1] # Gerçek RSI'ı al
+        # Tıpkı live_sim.py'deki gibi RSI/100 ve diğerlerini sabit 0.5/0.0 yapıyoruz
+        num = np.array([[rsi_raw/100.0, 0.5, 0.5, 0.0, 0.5, 0.0, 0.5]], dtype=np.float32)
         
-        # 3. TAHMİN (Sihir burada gerçekleşiyor)
+        # 3. TAHMİN
         preds = BEYIN({'gorsel_input': np.expand_dims(img, 0), 'sayisal_input': num}, training=False).numpy()[0]
         
         buy_prob, hold_prob, sell_prob = preds[0], preds[1], preds[2]

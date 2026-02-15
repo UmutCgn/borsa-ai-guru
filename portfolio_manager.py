@@ -167,3 +167,9 @@ def istatistikleri_getir():
         k_basari = (len([i for i in kamikaze if i.get("kar_usd", 0) > 0]) / len(kamikaze) * 100) if kamikaze else 0
         
         return round(haftalik_kar, 2), len(kamikaze), round(k_basari, 2)
+
+
+def aktif_islem_sayisi():
+    """Kaç tane açık pozisyon olduğunu sayar."""
+    cuzdan = cuzdan_yukle()
+    return len(cuzdan.get("aktif_pozisyonlar", []))

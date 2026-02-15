@@ -18,26 +18,26 @@ borsa = ccxt.binance({
 
 
 def grafik_hazirla(sembol, tf):
-    """V6 Dataset standardında 17 mumluk çizgili grafik çizer."""
+    """V6 Dataset standardında 17 mumluk çizgili grafik ve ADX/EMA50 verisi üretir."""
     try:
-        # LİMİTİ 150 YAPTIK: İndikatörlerin (EMA50 vb.) hesaplanabilmesi için geçmişe ihtiyaç var!
         ohlcv = borsa.fetch_ohlcv(sembol, timeframe=tf, limit=150)
         import pandas as pd; import mplfinance as mpf; import pandas_ta as ta
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         
-        # Çizgileri ekle
+        # Çizgiler ve İndikatörler
         df['EMA20'] = ta.ema(df['close'], length=20)
         df['EMA50'] = ta.ema(df['close'], length=50)
         bbands = ta.bbands(df['close'], length=20, std=2)
         df['BB_LOWER'] = bbands.iloc[:, 0]
         df['BB_UPPER'] = bbands.iloc[:, 2]
         
-        # NaN olanları at (İlk 50 mum çöpe gidecek, geriye sağlam mumlar kalacak)
-        df.dropna(inplace=True)
+        # 🚨 LIVE_SIM UYUMU: ADX (Trend Gücü) HESAPLAMASI 🚨
+        adx_df = ta.adx(df['high'], df['low'], df['close'])
+        df['ADX'] = adx_df['ADX_14'] if adx_df is not None else 0.0
         
-        # Son 17 mumu al (AI'ın tam olarak eğitimde gördüğü pencere genişliği)
+        df.dropna(inplace=True)
         df_slice = df.tail(17) 
         
         ekstra_cizgiler = [
@@ -47,23 +47,8 @@ def grafik_hazirla(sembol, tf):
             mpf.make_addplot(df_slice['BB_UPPER'], color='gray', alpha=0.5)
         ]
         
-        custom_style = mpf.make_mpf_style(
-            base_mpf_style='charles', 
-            gridstyle='', 
-            facecolor='white', 
-            figcolor='white', 
-            edgecolor='black'
-        )
-        
-        # scale_padding=0.0 ekledik ki kenarlardan gereksiz boşluk bırakmasın, yapay zeka mumları net görsün.
-        mpf_kwargs = dict(
-            type='candle', 
-            style=custom_style, 
-            axisoff=True, 
-            tight_layout=True, 
-            scale_padding=0.0,
-            addplot=ekstra_cizgiler
-        )
+        custom_style = mpf.make_mpf_style(base_mpf_style='charles', gridstyle='', facecolor='white', figcolor='white', edgecolor='black')
+        mpf_kwargs = dict(type='candle', style=custom_style, axisoff=True, tight_layout=True, scale_padding=0.0, addplot=ekstra_cizgiler)
         
         yol = "canli_analiz.png"
         mpf.plot(df_slice, **mpf_kwargs, savefig=dict(fname=yol, dpi=85, format='png', bbox_inches='tight'))
@@ -183,120 +168,142 @@ def baslangic_kontrolleri():
     tel_mod.mesaj_gonder(f"🤖 *Guru AI Başlatıldı!*\n💰 Bakiye: {nakit:.2f} USDT")
 
 def analiz_motoru(coin, mod="KAMIKAZE"):
-
-    
-
     try:
-
-        
-        # 1. BOTUN O COİNE BAKTIĞINI KANITLA
-        print(f"🔍 {coin} verisi çekiliyor...", end=" ", flush=True) 
+        # Alt satıra inmeden, aynı satırda işlem başlatıldığını gösterir
+        print(f"🔍 {coin:<10} inceleniyor... ", end="\r", flush=True) 
         
         tf = "5m" if mod == "KAMIKAZE" else "15m"
         yol, fiyat, df = grafik_hazirla(coin, tf)
         
-        # 2. EĞER GRAFİK ÇİZİLEMEZSE SESSİZCE KAÇMASINI ENGELLE
         if not yol: 
-            print("❌ GRAFİK HATASI! (Pas)", flush=True)
-            return
-
-        tf = "5m" if mod == "KAMIKAZE" else "15m"
-        yol, fiyat, df = grafik_hazirla(coin, tf)
-        if not yol: return
-
+            print(f"❌ {coin:<10} GRAFİK HATASI! (Pas)", flush=True); return
+            
         s_vektor = sayisal_veri.verileri_cek(borsa, coin)
-        rsi_val, atr_yuzde = s_vektor[0], s_vektor[2]
+        
+        # 🚨 HATA DÜZELTİLDİ: s_vektor[0] (sabit 1.0) yerine gerçek RSI olan s_vektor[1] kullanıldı!
+        rsi_val, atr_yuzde = s_vektor[1], s_vektor[2] 
         tespit, guven, sinyal = decision_engine.sistemi_test_et_donuslu(yol, s_vektor)
         
-        dolu_kutu = int(guven / 10)
-        p_bar = "█" * dolu_kutu + "░" * (10 - dolu_kutu)
+        # 🚨 LIVE_SIM FİLTRE VERİLERİ 🚨
+        adx_val = df['ADX'].iloc[-1]
+        ema50_val = df['EMA50'].iloc[-1]
+        
+        d_kutu = int(guven / 10)
+        p_bar = "█" * d_kutu + "░" * (10 - d_kutu)
         zaman = datetime.now().strftime('%H:%M:%S')
         
-        if guven >= 75 and ("BUY" in sinyal or "SELL" in sinyal):
+        # --- KATI GİRİŞ KURALLARI (Simülasyon Birebir Klonu) ---
+        onay = False
+        pas_sebebi = tespit # Varsayılan sebep yapay zekanın kendi kararı
+        
+        if guven >= 75:
+            if adx_val > 20: # Trend yeterince güçlü mü?
+                if "BUY" in sinyal and fiyat > ema50_val: # Long için trend üstü mü?
+                    onay = True
+                elif "SELL" in sinyal and fiyat < ema50_val: # Short için trend altı mı?
+                    onay = True
+                else:
+                    pas_sebebi = "EMA50 Trendine Ters"
+            else:
+                pas_sebebi = "ADX<20 (Hacimsiz/Yatay)"
+
+        # --- TETİĞİ ÇEK ---
+        if onay:
             risk_m = max(atr_yuzde, 0.30) * 1.5
             tp_f = fiyat * (1 + (risk_m * 3)/100) if "BUY" in sinyal else fiyat * (1 - (risk_m * 3)/100)
             sl_f = fiyat * (1 - risk_m/100) if "BUY" in sinyal else fiyat * (1 + risk_m/100)
 
             if port_man.islem_ac(coin, fiyat, tel_mod.ayarlar["butce"], sinyal, sl_f, tp_f, mod, risk_m, risk_m*3, sl_f):
-                # flush=True anında terminale basar!
-                print(f"\n[{zaman}] 🚀 {coin:<10} [{p_bar}] AI:%{guven:05.1f} | RSI:{rsi_val:05.2f} | 🎯 TETİK ÇEKİLDİ!", flush=True)
+                # Başarılı girişi zengin formatta ekrana bas
+                print(f"[{zaman}] 🚀 {coin:<10} [{p_bar}] AI:%{guven:05.1f} | RSI:{rsi_val:05.2f} | ADX:{adx_val:05.2f} | 🎯 TETİK ÇEKİLDİ!", flush=True)
                 
                 rapor = (f"🎯 *SNIPER GİRİŞ:* {coin}\n━━━━━━━━━━━━━━\n"
-                         f"📍 Fiyat: {fiyat:.4f}\n🧠 AI: %{guven:.1f} ({tespit})\n"
+                         f"📍 Fiyat: {fiyat:.4f}\n"
+                         f"🧠 AI: %{guven:.1f} ({tespit})\n"
+                         f"📈 ADX: {adx_val:.2f} (Güçlü) | 📉 EMA50 Trendi: ONAYLI\n"
                          f"🛑 SL: {sl_f:.4f} | ✅ TP: {tp_f:.4f}")
                 tel_mod.resim_gonder(yol, rapor)
         else:
-            # Saniyeler içinde terminale bilgi düşer
-            print(f"[{zaman}] 📡 {coin:<10} [{p_bar}] AI:%{guven:05.1f} | RSI:{rsi_val:05.2f} | ⏳ Pas ({tespit})", flush=True)
+            # İşleme girilmediyse neden girilmediğini (\r ile "inceleniyor" yazısını silerek) ekrana bas
+            print(f"[{zaman}] 📡 {coin:<10} [{p_bar}] AI:%{guven:05.1f} | RSI:{rsi_val:05.2f} | ADX:{adx_val:05.2f} | ⏳ Pas ({pas_sebebi})", flush=True)
 
     except Exception as e:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {coin} Hatası: {e}", flush=True)
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ❌ {coin} Analiz Hatası: {e}", flush=True)
 def ana_dongu():
-    """Botun Hareket Merkezi: 5 Koldan Sessiz Takip Yapar."""
     tel_mod.dinlemeyi_baslat()
     time.sleep(2)
-    tel_mod.mesaj_gonder("🤖 *GURU AI V23 Multi-Sniper Aktif!* \nSpam engellendi, sadece aksiyon raporlanacak.")
-    
+    tel_mod.mesaj_gonder("🤖 *GURU AI V23 Multi-Sniper Aktif!* \nLoglar terminalde akıyor.")
     sayac, k_timer = 0, time.time()
     
     while True:
         try:
             is_aktif = tel_mod.ayarlar.get("trading_aktif", False)
-            aktif_mod = tel_mod.ayarlar.get("mod", "NORMAL")
             manual_mi = tel_mod.ayarlar.get("manual_trigger", False)
+            aktif_mod = tel_mod.ayarlar.get("mod", "NORMAL")
             
-            # 🛡️ 1. KASA KORUMA KONTROLÜ (1400 / 650)
+            # 1. Kasa Koruma
             if is_aktif and aktif_mod == "KAMIKAZE":
                 baslangic = tel_mod.ayarlar.get("baslangic_bakiyesi", 1000)
-                durum, toplam_varlik = port_man.kasa_durumu_kontrol(baslangic, 40, 35) # +%40, -%35
-                
+                durum, toplam_v = port_man.kasa_durumu_kontrol(baslangic, 40, 35) 
                 if durum == "TARGET_REACHED":
-                    tel_mod.mesaj_gonder(f"💰 *HEDEF 1400 TAMAMLANDI!* \nToplam Varlık: {toplam_varlik:.2f}\nSistem durduruluyor.")
-                    tel_mod.ayarlar["trading_aktif"] = False
+                    tel_mod.mesaj_gonder(f"💰 *HEDEF 1400 TAMAM!* Bakiye: {toplam_v:.2f}"); tel_mod.ayarlar["trading_aktif"] = False
                 elif durum == "MAX_LOSS_REACHED":
-                    tel_mod.mesaj_gonder(f"🛑 *KASA KORUMA AKTİF!* \nToplam Varlık: {toplam_varlik:.2f}\nZarar durduruldu.")
-                    tel_mod.ayarlar["trading_aktif"] = False
+                    tel_mod.mesaj_gonder(f"🛑 *KASA KORUMA!* Bakiye: {toplam_v:.2f}"); tel_mod.ayarlar["trading_aktif"] = False
 
-            # 📡 2. SESSİZ ÇOKLU RADAR TARAMASI
-            if tel_mod.ayarlar.get("trading_aktif") and (sayac <= 0 or manual_mi):
-                radar = tel_mod.ayarlar.get("radar_listesi", [])
-                
-                for coin in radar:
-                    cuzdan = port_man.cuzdan_yukle()
-                    # İşlem limitini (5) ve coinin zaten açık olup olmadığını kontrol et
-                    if len(cuzdan.get("aktif_pozisyonlar", [])) < 5 and not port_man.bu_coin_acik_mi(coin):
-                        analiz_motoru(coin, aktif_mod)
-                
-                tel_mod.ayarlar["manual_trigger"] = False
-                sayac = 60 # 5 dakikada bir tarar
+            # 2. Çoklu Tarama Merkezi
+            if is_aktif:
+                if sayac <= 0 or manual_mi:
+                    radar = tel_mod.ayarlar.get("radar_listesi", [])
+                    if not radar:
+                        print("\n⚠️ RADAR BOŞ! Telegram'dan /kesfet yapın.", flush=True); sayac = 10
+                    else:
+                        print(f"\n{'='*40}\n🔄 YENİ TARAMA ({datetime.now().strftime('%H:%M:%S')})\n{'='*40}", flush=True)
+                        for coin in radar:
+                            cuzdan = port_man.cuzdan_yukle()
+                            if len(cuzdan.get("aktif_pozisyonlar", [])) < 5 and not port_man.bu_coin_acik_mi(coin):
+                                analiz_motoru(coin, aktif_mod)
+                        tel_mod.ayarlar["manual_trigger"] = False
+                        sayac = 60 # 60 saniyede bir agresif tarama
             
-            # 🚀 3. SÜREKLİ TAKİP (SUPERVISOR)
+            # 3. Bekçi (Supervisor) ve 🟢 CANLI PNL AKIŞI 🔴
             cuzdan = port_man.cuzdan_yukle()
-            for islem in cuzdan.get("aktif_pozisyonlar", []):
-                try:
-                    f = borsa.fetch_ticker(islem["coin"])['last']
-                    durum_sup, veri_sup = ai_supervisor.denetle(islem, f, 0)
-                    
-                    if durum_sup == "CLOSE":
-                        port_man.islem_kapat(islem["coin"], f, veri_sup)
-                        tel_mod.mesaj_gonder(f"✅ *POZİSYON KAPANDI:* {islem['coin']}\nNeden: {veri_sup}\nFiyat: {f}")
-                    elif durum_sup == "UPDATE_SL":
-                        if port_man.sl_guncelle(islem["coin"], veri_sup):
-                            tel_mod.mesaj_gonder(f"🛡️ *KÂR KİLİTLENDİ:* {islem['coin']} \nYeni SL: {veri_sup:.4f}")
-                except Exception as e:
-                    print(f"⚠️ {islem['coin']} Bekçi Hatası: {e}")
+            pozlar = cuzdan.get("aktif_pozisyonlar", [])
+            
+            if pozlar:
+                canli_pnl_listesi = []
+                for islem in pozlar:
+                    try:
+                        f = borsa.fetch_ticker(islem["coin"])['last']
+                        
+                        # --- CANLI EKRAN İÇİN PNL HESAPLAMA ---
+                        oran = ((f - islem["giris_fiyati"]) / islem["giris_fiyati"]) * 100
+                        if islem["tip"] == "SELL": oran *= -1
+                        ikon = "🟢" if oran > 0 else "🔴"
+                        canli_pnl_listesi.append(f"{islem['coin']} {ikon} %{oran:.2f}")
 
-            # 📊 4. SAATLİK SESSİZ RAPOR (İsteğe bağlı)
-            if tel_mod.ayarlar.get("trading_aktif") and (time.time() - k_timer) >= 3600:
-                c_guncel = port_man.cuzdan_yukle()
-                p_sayisi = len(c_guncel.get("aktif_pozisyonlar", []))
-                tel_mod.mesaj_gonder(f"📊 *SAATLİK DURUM*\nNakit: {c_guncel['bakiye']:.2f} USDT\nAçık İşlem: {p_sayisi}/5")
-                k_timer = time.time()
+                        # --- BEKÇİ MÜDAHALESİ ---
+                        durum_sup, veri_sup = ai_supervisor.denetle(islem, f, 0)
+                        if durum_sup == "CLOSE":
+                            port_man.islem_kapat(islem["coin"], f, veri_sup)
+                            tel_mod.mesaj_gonder(f"✅ *KAPANDI:* {islem['coin']} \nNeden: {veri_sup}")
+                            print(f"\n✅ {islem['coin']} KAPANDI: {veri_sup}", flush=True)
+                        elif durum_sup == "UPDATE_SL":
+                            if port_man.sl_guncelle(islem["coin"], veri_sup):
+                                print(f"\n🛡️ {islem['coin']} Kâr kilitlendi! Yeni SL: {veri_sup}", flush=True)
+                    except: pass
+                
+                # SADECE 5 SANİYEDE BİR EKRANA BAS Kİ ÇOK HIZLI AKIP GÖZÜ YORMASIN
+                if is_aktif and sayac % 5 == 0:
+                    durum_metni = " | ".join(canli_pnl_listesi)
+                    print(f"👁️ [CANLI TAKİP] {durum_metni}", flush=True)
+            else:
+                # EĞER İÇERİDE İŞLEM YOKSA GERİ SAYIM YAP
+                if is_aktif and sayac % 5 == 0:
+                    print(f"⏳ Sonraki taramaya: {sayac:02d} sn... [İçerideki: 0/5]", flush=True)
 
         except Exception as e:
-            print(f"⚠️ Kritik Ana Döngü Hatası: {e}")
-            time.sleep(5)
-
-        time.sleep(1)
+            print(f"\n⚠️ Döngü Hatası: {e}", flush=True); time.sleep(5)
+            
+        time.sleep(1); sayac -= 1
 if __name__ == "__main__":
     ana_dongu()

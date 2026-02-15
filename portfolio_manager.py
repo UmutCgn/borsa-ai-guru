@@ -5,31 +5,31 @@ import time
 from datetime import datetime, timedelta
 
 DOSYA = "cuzdan.json"
-# 🛡️ RLock: Aynı thread'in (Main/Telegram) kilidi birden fazla kez almasına izin verir.
 dosya_kilidi = threading.RLock()
 
 def cuzdan_yukle():
-    """Her zaman taze veriyi diskten güvenle okur. Okuyamazsa sistemi korumaya alır."""
+    """Taze veriyi güvenle okur. Hata anında sistemi korumaya alır."""
     with dosya_kilidi:
         if not os.path.exists(DOSYA):
-            # Dosya gerçekten hiç yoksa (ilk kurulum) varsayılanı döndür
-            return {"bakiye": 10000.0, "acik_islem": None, "islem_gecmisi": []}
+            return {"bakiye": 10000.0, "aktif_pozisyonlar": [], "islem_gecmisi": []}
         
-        # Okuma için 5 deneme (Dosya o an meşgulse bekleme yapar)
         for deneme in range(5):
             try:
                 with open(DOSYA, "r", encoding="utf-8") as f:
                     veri = json.load(f)
-                    # Dosya boş kalmışsa (crash anında vs.) exception'a düşmesi için kontrol
-                    if not veri: raise ValueError("JSON dosyası boş!") 
+                    if not veri: raise ValueError("JSON boş!")
+                    # Eski tekli sistemden kalan 'acik_islem' varsa listeye çevir
+                    if "acik_islem" in veri and veri["acik_islem"] is not None:
+                        if "aktif_pozisyonlar" not in veri: veri["aktif_pozisyonlar"] = []
+                        veri["aktif_pozisyonlar"].append(veri["acik_islem"])
+                        veri["acik_islem"] = None
+                    if "aktif_pozisyonlar" not in veri: veri["aktif_pozisyonlar"] = []
                     return veri
             except Exception as e:
-                print(f"⚠️ Cüzdan okuma denemesi {deneme+1}/5 başarısız: {e}")
-                time.sleep(0.5) # Bekleme süresini biraz artırdık
+                time.sleep(0.5)
         
-        # 5 denemede de okuyamazsa ASLA 10000 varsayılanı DÖNME! Sistemi kilitle.
-        print("❌ KRİTİK HATA: Cüzdan dosyası okunamıyor! Veri kaybını önlemek için varsayılan bakiye DÖNDÜRÜLMEYECEK.")
-        raise RuntimeError("Cüzdan dosyası okunamadı veya bozuk. Lütfen cuzdan.json dosyasını kontrol edin.")
+        raise RuntimeError("Cüzdan dosyası okunamadı veya bozuk!")
+
 def cuzdan_kaydet(veri):
     """Atomic Write: Önce geçici dosyaya yazar, sonra asıl dosyayı günceller."""
     temp_dosya = DOSYA + ".tmp"
@@ -39,84 +39,80 @@ def cuzdan_kaydet(veri):
                 json.dump(veri, f, indent=4)
                 f.flush()
                 os.fsync(f.fileno())
-            # Windows uyumluluğu için önce eskisini silip sonra ismini değiştiriyoruz
-            if os.path.exists(DOSYA):
-                os.remove(DOSYA)
+            if os.path.exists(DOSYA): os.remove(DOSYA)
             os.rename(temp_dosya, DOSYA)
         except Exception as e:
             print(f"⚠️ Kritik Yazma Hatası: {e}")
-            if os.path.exists(temp_dosya): os.remove(temp_dosya)
 
-def islem_ac(coin, fiyat, miktar, tip, sl, tp, mod, sl_yuzde, tp_yuzde):
-    """
-    İşlemi açar, komisyonu keser ve Slippage (Fiyat Kayması) uygular.
-    """
+def bu_coin_acik_mi(coin):
+    """Aynı coine iki kere girilmesini engeller."""
+    cuzdan = cuzdan_yukle()
+    return any(p["coin"] == coin for p in cuzdan.get("aktif_pozisyonlar", []))
+
+def islem_ac(coin, fiyat, miktar, tip, sl, tp, mod, sl_yuzde, tp_yuzde, sl_ilk):
+    """Yeni bir pozisyonu listeye ekler (Maksimum 5 işlem)."""
     with dosya_kilidi:
         cuzdan = cuzdan_yukle()
-        if cuzdan["acik_islem"] or cuzdan["bakiye"] < miktar: return False
+        pozisyonlar = cuzdan.get("aktif_pozisyonlar", [])
         
-        # --- 🛡️ MALİYET VE SLIPPAGE YÖNETİMİ ---
-        # Binance standart komisyonu: İşlem başına %0.1
+        # EMNİYET KONTROLLERİ
+        if len(pozisyonlar) >= 5: return False # 5 işlem sınırı
+        if bu_coin_acik_mi(coin): return False # Aynı coin kontrolü
+        if cuzdan["bakiye"] < miktar: return False # Bakiye kontrolü
+        
+        # --- MALİYET VE SLIPPAGE ---
         komisyon_orani = 0.001 
-        
-        # Eğer mod Kamikaze ise agresif girer (Piyasa Emri) ve %0.2 fiyat kayması (Slippage) yaşar
-        # Eğer Normal mod ise Limit emir bekler ve kayma yaşamaz (Sıfır Slippage)
         slippage_orani = 0.002 if mod == "KAMIKAZE" else 0.000 
         
-        # Gerçekleşen fiyata Slippage yansıtılır (Daha kötü fiyattan almış oluruz)
         gerceklesen_fiyat = fiyat * (1 + slippage_orani) if tip == "BUY" else fiyat * (1 - slippage_orani)
-        
-        # Komisyon peşin olarak bütçeden düşülür
         kesilen_komisyon_usd = miktar * komisyon_orani
         gercek_islem_miktari = miktar - kesilen_komisyon_usd
 
-        # Bütçe cüzdandan düşülür
         cuzdan["bakiye"] -= miktar
         
-        cuzdan["acik_islem"] = {
+        yeni_islem = {
             "coin": coin, 
-            "giris_fiyati": gerceklesen_fiyat, # Slippage yemiş kötü fiyat
-            "miktar": gercek_islem_miktari,    # Komisyonu kesilmiş net miktar
+            "giris_fiyati": gerceklesen_fiyat,
+            "miktar": gercek_islem_miktari,
             "tip": tip,
             "sl": sl, "tp": tp, 
+            "sl_fiyati_ilk": sl_ilk, # Supervisor için kritik
             "sl_yuzde": sl_yuzde, "tp_yuzde": tp_yuzde,
             "mod": mod, 
             "zaman": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        print(f"💸 [Maliyet] Komisyon: {kesilen_komisyon_usd:.2f} USDT | Slippage: %{(slippage_orani*100):.2f}")
+        cuzdan["aktif_pozisyonlar"].append(yeni_islem)
+        print(f"💸 [Multi-Sniper] {coin} Girildi | Komisyon: {kesilen_komisyon_usd:.2f} USDT")
         
         cuzdan_kaydet(cuzdan)
         return True
 
-def islem_kapat(mevcut_fiyat, sebep="OTOMATIK"):
-    """İşlemi nakde çevirir, çıkış komisyonunu keser ve cüzdanı günceller."""
+def islem_kapat(coin, mevcut_fiyat, sebep="OTOMATIK"):
+    """Belirli bir coini listeden bulur, kapatır ve nakde döner."""
     with dosya_kilidi:
         cuzdan = cuzdan_yukle()
-        if not cuzdan.get("acik_islem"): return None
-        islem = cuzdan["acik_islem"]
+        pozisyonlar = cuzdan.get("aktif_pozisyonlar", [])
         
-        # Çıkışta da Slippage yaşanabilir (Özellikle Stop-Loss patlarsa)
+        hedef_islem = next((p for p in pozisyonlar if p["coin"] == coin), None)
+        if not hedef_islem: return None
+
+        # --- ÇIKIŞ HESAPLAMA ---
         slippage_orani = 0.002 if sebep == "WATCHDOG_EXIT" else 0.000
-        gerceklesen_cikis = mevcut_fiyat * (1 - slippage_orani) if islem["tip"] == "BUY" else mevcut_fiyat * (1 + slippage_orani)
+        gerceklesen_cikis = mevcut_fiyat * (1 - slippage_orani) if hedef_islem["tip"] == "BUY" else mevcut_fiyat * (1 + slippage_orani)
         
-        # Kâr oranını hesapla
-        kar_orani = ((gerceklesen_cikis - islem["giris_fiyati"]) / islem["giris_fiyati"]) * 100
-        if islem["tip"] == "SELL": kar_orani *= -1
+        kar_orani = ((gerceklesen_cikis - hedef_islem["giris_fiyati"]) / hedef_islem["giris_fiyati"]) * 100
+        if hedef_islem["tip"] == "SELL": kar_orani *= -1
         
-        # Brüt Kâr/Zarar
-        brut_kar_zarar = (islem["miktar"] * kar_orani) / 100
-        
-        # --- ÇIKIŞ KOMİSYONU ---
-        toplam_donen_para = islem["miktar"] + brut_kar_zarar
-        cikis_komisyonu = toplam_donen_para * 0.001
+        brut_kar_zarar = (hedef_islem["miktar"] * kar_orani) / 100
+        toplam_donen = hedef_islem["miktar"] + brut_kar_zarar
+        cikis_komisyonu = toplam_donen * 0.001
         net_kar = brut_kar_zarar - cikis_komisyonu
         
-        # Cüzdanı güncelle
-        cuzdan["bakiye"] += (islem["miktar"] + net_kar)
+        cuzdan["bakiye"] += (hedef_islem["miktar"] + net_kar)
         
         sonuc = {
-            **islem, 
+            **hedef_islem, 
             "cikis_fiyati": gerceklesen_cikis, 
             "kar_usd": round(net_kar, 2), 
             "kapanis_zamani": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -124,26 +120,50 @@ def islem_kapat(mevcut_fiyat, sebep="OTOMATIK"):
         }
         
         cuzdan["islem_gecmisi"].append(sonuc)
-        cuzdan["acik_islem"] = None
+        cuzdan["aktif_pozisyonlar"] = [p for p in pozisyonlar if p["coin"] != coin]
+        
         cuzdan_kaydet(cuzdan)
         return sonuc
 
+def sl_guncelle(coin, yeni_sl):
+    """Listedeki bir coinin stop loss değerini günceller."""
+    with dosya_kilidi:
+        cuzdan = cuzdan_yukle()
+        for p in cuzdan["aktif_pozisyonlar"]:
+            if p["coin"] == coin:
+                p["sl"] = yeni_sl
+                cuzdan_kaydet(cuzdan)
+                return True
+    return False
+
+def is_islem_var():
+    """Herhangi bir açık işlem olup olmadığını kontrol eder."""
+    cuzdan = cuzdan_yukle()
+    return len(cuzdan.get("aktif_pozisyonlar", [])) > 0
+
+def kasa_durumu_kontrol(baslangic_bakiyesi, hedef_kar_orani, max_zarar_orani):
+    """Toplam varlığı (Nakit + İşlemdekiler) hesaplar ve limiti kontrol eder."""
+    cuzdan = cuzdan_yukle()
+    nakit = cuzdan.get("bakiye", 0)
+    islemdekiler = sum(p["miktar"] for p in cuzdan.get("aktif_pozisyonlar", []))
+    toplam_varlik = nakit + islemdekiler
+    
+    if toplam_varlik >= baslangic_bakiyesi * (1 + hedef_kar_orani / 100):
+        return "TARGET_REACHED", toplam_varlik
+    if toplam_varlik <= baslangic_bakiyesi * (1 - max_zarar_orani / 100):
+        return "MAX_LOSS_REACHED", toplam_varlik
+        
+    return "OK", toplam_varlik
+
 def istatistikleri_getir():
-    """Son 7 günlük kar/zarar özetini döner."""
+    """Tüm geçmiş üzerinden genel başarı oranını döner."""
     with dosya_kilidi:
         cuzdan = cuzdan_yukle()
         gecmis = cuzdan.get("islem_gecmisi", [])
         bir_hafta_once = datetime.now() - timedelta(days=7)
-        haftalik_kar = 0.0
-        for i in gecmis:
-            z = i.get("kapanis_zamani")
-            if z and datetime.strptime(z, '%Y-%m-%d %H:%M:%S') > bir_hafta_once:
-                haftalik_kar += i.get("kar_usd", 0.0)
+        haftalik_kar = sum(i.get("kar_usd", 0.0) for i in gecmis if datetime.strptime(i["kapanis_zamani"], '%Y-%m-%d %H:%M:%S') > bir_hafta_once)
+        
         kamikaze = [i for i in gecmis if i.get("mod") == "KAMIKAZE"]
-        k_adet = len(kamikaze)
-        k_basari = (len([i for i in kamikaze if i.get("kar_usd", 0) > 0]) / k_adet * 100) if k_adet > 0 else 0
-        return round(haftalik_kar, 2), k_adet, round(k_basari, 2)
-
-def bakiye_senkronize_et():
-    # Geliştirme sürecinde sanal bakiye ile devam
-    print("ℹ️ Cüzdan kontrol edildi. Sanal mod aktif.")
+        k_basari = (len([i for i in kamikaze if i.get("kar_usd", 0) > 0]) / len(kamikaze) * 100) if kamikaze else 0
+        
+        return round(haftalik_kar, 2), len(kamikaze), round(k_basari, 2)

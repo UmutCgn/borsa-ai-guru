@@ -1,50 +1,52 @@
 # ai_supervisor.py
 
-class AISupervisor:
-    def __init__(self, ana_aralik=2.5): # Aralığı %2.5'e çekerek biraz daha nefes payı verdik
-        """
-        ana_aralik: Maksimum izin verilen temel zarar yüzdesi.
-        """
-        self.max_zarar = ana_aralik
-
-    def denetle(self, mevcut_pnl, ai_guven, atr_p_ratio):
-        """
-        mevcut_pnl: % cinsinden PnL (Örn: -1.2 veya 0.5)
-        ai_guven: AI'nın yön için güven skoru (0.0 - 1.0)
-        atr_p_ratio: ATR / Fiyat * 100 (Oynaklık çarpanı)
-        """
+def denetle(islem_verisi, mevcut_fiyat, atr=0):
+    """
+    islem_verisi: portfolio_manager'dan gelen acik_islem sözlüğü
+    mevcut_fiyat: Coin'in anlık fiyatı
+    atr: O anki ATR değeri
+    """
+    try:
+        pos = islem_verisi
+        entry = pos["giris_fiyati"]
+        side = pos.get("tip", "BUY") # 'BUY' veya 'SELL'
         
-        # 1. SENARYO: AI ÇOK EMİN (%75 ÜZERİ) -> "GENİŞ ALAN"
-        if ai_guven >= 0.75:
-            # Model çok eminse, gürültüden (noise) etkilenmemek için tam stop mesafesi ver.
-            aktif_stop = -self.max_zarar
-            aksiyon = "GÜÇLÜ (Esnek)"
-            
-        # 2. SENARYO: AI KARARSIZ (%40 - %75 ARASI) -> "DARALTILMIŞ STOP"
-        elif 0.40 <= ai_guven < 0.75:
-            # AI biraz şüpheli. Stopu maliyete yaklaştır ama hemen çıkma.
-            # En az %1.0 veya max_zararın %40'ı kadar stop bırak.
-            aktif_stop = -max(1.0, self.max_zarar * 0.4)
-            aksiyon = "İZLEMEDE (Dar SL)"
+        # Risk birimi (Girişte belirlenen SL mesafesi)
+        # sl_fiyati_ilk yoksa mevcut sl'den hesapla
+        sl_ilk = pos.get("sl_fiyati_ilk", pos["sl"])
+        risk_birimi = abs(entry - sl_ilk) 
+        kat_edilen_mesafe = abs(mevcut_fiyat - entry)
 
-        # 3. SENARYO: AI GÜVENİ ÇÖKTÜ (%40 ALTI) -> "ACİL ÇIKIŞ"
-        else:
-            # Eskiden 0.0 idi (yani hemen çıkış), şimdi ufak bir (-0.3%) pay bırakıyoruz 
-            # ki ufak toparlanmada en azından komisyon çıksın.
-            aktif_stop = -0.3
-            aksiyon = "PANİK (Acil Çıkış)"
+        # 🛡️ KADEMELİ KİLİT MEKANİZMASI
+        yeni_sl = pos["sl"] # Mevcut stopu koru
 
-        # 4. VOLATİLİTEYE GÖRE TRAILING (Kâr Koruma)
-        # Sadece %1.2 kâra geçince değil, volatiliteye (ATR) göre stopu sürükle
-        if mevcut_pnl > 1.2:
-            # Oynaklık ne kadar fazlaysa, trailing stop o kadar uzaktan takip eder (1.5 katı)
-            trail_distance = max(0.6, atr_p_ratio * 1.5)
-            yeni_stop = mevcut_pnl - trail_distance
-            aktif_stop = max(aktif_stop, yeni_stop)
-            aksiyon = "TAKİPTE (Trailing)"
+        # Aşama 1: Fiyat 1 Risk birimi kadar lehimize giderse -> Stopu Maliyete Çek
+        if kat_edilen_mesafe >= risk_birimi:
+            komisyon_payi = entry * 0.002
+            breakeven_p = (entry + komisyon_payi) if side == "BUY" else (entry - komisyon_payi)
+            # Stopu sadece daha iyi bir yere gidiyorsa güncelle (Geri çekme!)
+            if side == "BUY": yeni_sl = max(yeni_sl, breakeven_p)
+            else: yeni_sl = min(yeni_sl, breakeven_p)
 
-        # Karar Verme
-        if mevcut_pnl <= aktif_stop:
-            return "CLOSE", aktif_stop, aksiyon
-        else:
-            return "KEEP", aktif_stop, aksiyon
+        # Aşama 2: Fiyat 1.8 Risk birimi kadar giderse -> Stopu +1 Risk kâr bölgesine çek
+        if kat_edilen_mesafe >= (risk_birimi * 1.8):
+            kar_kilidi = (entry + (risk_birimi * 0.8)) if side == "BUY" else (entry - (risk_birimi * 0.8))
+            if side == "BUY": yeni_sl = max(yeni_sl, kar_kilidi)
+            else: yeni_sl = min(yeni_sl, kar_kilidi)
+
+        # KARAR VERME
+        # Stop patladı mı?
+        stop_patladi = (side == "BUY" and mevcut_fiyat <= yeni_sl) or (side == "SELL" and mevcut_fiyat >= yeni_sl)
+        # Kar hedefi vuruldu mu?
+        tp_vuruldu = (side == "BUY" and mevcut_fiyat >= pos["tp"]) or (side == "SELL" and mevcut_fiyat <= pos["tp"])
+
+        if tp_vuruldu: 
+            return "CLOSE", "DEV KAZANÇ 🎯🎯🎯"
+        if stop_patladi: 
+            return "CLOSE", "SİSTEMATİK STOP 🛑"
+        
+        return "KEEP", yeni_sl # Pozisyonu koru, güncellenmiş stopu dön
+
+    except Exception as e:
+        print(f"⚠️ Supervisor Hatası: {e}")
+        return "KEEP", islem_verisi["sl"]
